@@ -61,7 +61,6 @@ const convertAskingTaskToProcessState = (data: AskingTask) => {
   const processState = {
     [AskingTaskStatus.UNDERSTANDING]: PROCESS_STATE.UNDERSTANDING,
     [AskingTaskStatus.SEARCHING]: PROCESS_STATE.SEARCHING,
-    [AskingTaskStatus.PLANNING]: PROCESS_STATE.PLANNING,
     [AskingTaskStatus.GENERATING]: PROCESS_STATE.GENERATING,
     // Show generating state component when AI correcting
     [AskingTaskStatus.CORRECTING]: PROCESS_STATE.GENERATING,
@@ -90,7 +89,11 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
     onStopRecommend,
   } = props;
   const [inputValue, setInputValue] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
   const askProcessState = useAskProcessState();
+
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const {
     originalQuestion,
@@ -106,7 +109,6 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
       candidates: askingTask?.candidates || [], // for text to sql answer, only one candidate
       askingStreamTask, // for general answer
       recommendedQuestions, // guiding user to ask
-      intentReasoning: askingTask?.intentReasoning || '',
     }),
     [data],
   );
@@ -189,6 +191,53 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
     onSubmit && (await onSubmit(question));
   };
 
+  const startRecording = () => {
+    setIsRecording(true);
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then(stream => {
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        mediaRecorder.start();
+        mediaRecorder.ondataavailable = e => {
+          chunksRef.current.push(e.data);
+        };
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(chunksRef.current, { type: 'audio/wav; codecs=opus' });
+          chunksRef.current = [];
+          const formData = new FormData();
+          formData.append('audio', blob, 'audio.wav');
+          try {
+            const response = await fetch('http://10.200.206.111:8889/asr', {
+              method: 'POST',
+              body: formData,
+            });
+
+            console.error('Error:', response);
+            const data = await response.json();
+            if (!response.ok) throw new Error(data);
+            console.log('Received data:', data); // Log the received data
+            if (data.result) {
+              setInputValue(data.result); // Update input value with the transcribed text
+              console.log('Updated input value:', data.result); // Log the updated input value
+              submitAsk(); // Submit Ask button
+            } else {
+              setInputValue('提出问题以探索您的数据'); // Set placeholder if result is empty
+            }
+          } catch (error) {
+            console.error('Error:', error);
+          }
+        };
+      })
+      .catch(error => console.error('Error:', error));
+  };
+
+  const stopRecording = () => {
+    setIsRecording(false);
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
   useImperativeHandle(
     ref,
     () => ({
@@ -200,14 +249,19 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
   );
 
   return (
-    <PromptStyle className="d-flex align-end bg-gray-2 p-3 border border-gray-3 rounded">
+    <PromptStyle className="d-flex align-end bg-gray-2 p-3 border border-gray-3 rounded"
+    style={{
+      marginLeft: '0px',
+      transform: 'translateX(-50%)',
+    }}
+    >
       <Input.TextArea
         ref={$promptInput}
         // disable grammarly
         data-gramm="false"
         size="large"
         autoSize
-        placeholder="Ask to explore your data"
+        placeholder="提出问题以探索您的数据"
         value={inputValue}
         onInput={syncInputValue}
         onPressEnter={inputEnter}
@@ -220,7 +274,16 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
         onClick={submitAsk}
         disabled={isProcessing}
       >
-        Ask
+        提问
+      </PromptButton>
+      <PromptButton
+        type="default"
+        size="large"
+        className="ml-3"
+        onClick={isRecording ? stopRecording : startRecording}
+        disabled={isProcessing}
+      >
+        {isRecording ? '停止' : '语音'}
       </PromptButton>
 
       <PromptResult
