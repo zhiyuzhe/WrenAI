@@ -197,21 +197,43 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
       .then(stream => {
         const mediaRecorder = new MediaRecorder(stream);
         mediaRecorderRef.current = mediaRecorder;
-        mediaRecorder.start();
+        const audioContext = new AudioContext();
+        const source = audioContext.createMediaStreamSource(stream);
+        const processor = audioContext.createScriptProcessor(2048, 1, 1);
+  
+        processor.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0);
+          let isSilent = true;
+          for (let i = 0; i < input.length; i++) {
+            if (Math.abs(input[i]) > 0.02) { // Adjust the threshold value as needed
+              isSilent = false;
+              break;
+            }
+          }
+  
+          if (isSilent && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+          }
+        };
+  
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+  
         mediaRecorder.ondataavailable = e => {
           chunksRef.current.push(e.data);
         };
+  
         mediaRecorder.onstop = async () => {
           const blob = new Blob(chunksRef.current, { type: 'audio/wav; codecs=opus' });
           chunksRef.current = [];
           const formData = new FormData();
           formData.append('audio', blob, 'audio.wav');
           try {
-            const response = await fetch('http://10.200.206.111:8889/asr', {
+            const response = await fetch('http://10.10.61.200:8889/asr', {
               method: 'POST',
               body: formData,
             });
-
+  
             console.error('Error:', response);
             const data = await response.json();
             if (!response.ok) throw new Error(data);
@@ -225,8 +247,16 @@ export default forwardRef<Attributes, Props>(function Prompt(props, ref) {
             }
           } catch (error) {
             console.error('Error:', error);
+          } finally {
+            // Clean up audio resources
+            processor.disconnect();
+            source.disconnect();
+            audioContext.close().catch(console.error);
+            setIsRecording(false);
           }
         };
+  
+        mediaRecorder.start();
       })
       .catch(error => console.error('Error:', error));
   };
